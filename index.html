@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Thiruvengadam TK — Portfolio</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root[data-theme="dark"] {
+    --bg: #0a0a0a; --surface: #111111; --border: #222222;
+    --accent: #00ff88; --accent2: #0088ff;
+    --text: #e8e8e8; --muted: #666666;
+    --toggle-bg: #1a1a1a; --toggle-border: #333;
+    --shadow: rgba(0,255,136,0.08);
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f4f0; --surface: #eceae4; --border: #d0cdc4;
+    --accent: #008844; --accent2: #0055cc;
+    --text: #1a1a1a; --muted: #888880;
+    --toggle-bg: #e0ded8; --toggle-border: #ccc;
+    --shadow: rgba(0,136,68,0.08);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { transition: background 0.3s, color 0.3s; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Space Mono', monospace;
+    overflow-x: hidden;
+    transition: background 0.35s ease, color 0.35s ease;
+  }
+
+  /* ── Theme Toggle ───────────────────────────────────────────────────── */
+  .theme-toggle {
+    position: fixed; top: 20px; right: 20px; z-index: 8000;
+    display: flex; align-items: center; gap: 8px;
+    background: var(--toggle-bg); border: 1px solid var(--toggle-border);
+    padding: 8px 12px 8px 10px;
+    cursor: pointer;
+    transition: background 0.35s, border-color 0.35s;
+    user-select: none;
+  }
+  .theme-toggle:hover { border-color: var(--accent); }
+  .toggle-track {
+    width: 36px; height: 20px; background: var(--border);
+    border-radius: 999px; position: relative; transition: background 0.3s; flex-shrink: 0;
+  }
+  [data-theme="dark"] .toggle-track { background: var(--accent); }
+  .toggle-thumb {
+    position: absolute; top: 3px; left: 3px;
+    width: 14px; height: 14px; background: var(--bg);
+    border-radius: 50%; transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+  }
+  [data-theme="dark"] .toggle-thumb { transform: translateX(16px); }
+  .toggle-label { font-size: 10px; letter-spacing: 0.15em; color: var(--muted); text-transform: uppercase; }
+  .toggle-icon { font-size: 14px; line-height: 1; }
+
+  /* ── Noise overlay ──────────────────────────────────────────────────── */
+  body::before {
+    content: ''; position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none; z-index: 1000; opacity: 0.3;
+  }
+
+  /* ── Hero ───────────────────────────────────────────────────────────── */
+  .hero {
+    min-height: 100vh;
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 100px 60px 80px;
+    position: relative;
+    border-bottom: 1px solid var(--border);
+    transition: border-color 0.35s;
+  }
+
+  .hero-tag {
+    font-size: 11px; color: var(--accent); letter-spacing: 0.2em;
+    text-transform: uppercase; margin-bottom: 24px;
+    opacity: 0; animation: fadeUp 0.6s ease forwards 0.2s;
+  }
+
+  .hero-name {
+    font-family: 'Syne', sans-serif;
+    font-size: clamp(40px, 8vw, 110px);
+    font-weight: 800; line-height: 0.95; letter-spacing: -0.03em;
+    margin-bottom: 32px;
+    opacity: 0; animation: fadeUp 0.6s ease forwards 0.4s;
+  }
+  .hero-name span { display: block; color: var(--accent); transition: color 0.3s; }
+
+  .hero-desc {
+    font-size: 14px; line-height: 1.8; color: var(--muted);
+    max-width: 480px; margin-bottom: 48px;
+    opacity: 0; animation: fadeUp 0.6s ease forwards 0.6s; transition: color 0.3s;
+  }
+
+  .hero-contact {
+    display: flex; gap: 20px; flex-wrap: wrap;
+    opacity: 0; animation: fadeUp 0.6s ease forwards 0.8s;
+  }
+  .hero-contact a {
+    color: var(--text); text-decoration: none; font-size: 12px;
+    letter-spacing: 0.05em; display: flex; align-items: center; gap: 8px;
+    transition: color 0.2s; word-break: break-all;
+  }
+  .hero-contact a:hover { color: var(--accent); }
+  .hero-contact a::before { content: '→'; color: var(--accent); flex-shrink: 0; }
+
+  .hero-grid {
+    position: absolute; right: 60px; top: 50%; transform: translateY(-50%);
+    display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px;
+    opacity: 0; animation: fadeIn 1s ease forwards 1s;
+  }
+  .grid-cell {
+    width: 24px; height: 24px;
+    border: 1px solid var(--border); transition: background 0.3s, border-color 0.3s;
+  }
+  .grid-cell.lit { background: var(--accent); border-color: var(--accent); }
+
+  .scroll-hint {
+    position: absolute; bottom: 32px; left: 60px;
+    font-size: 11px; color: var(--muted); letter-spacing: 0.15em;
+    display: flex; align-items: center; gap: 12px;
+    opacity: 0; animation: fadeUp 0.6s ease forwards 1.2s;
+  }
+  .scroll-hint::before {
+    content: ''; width: 40px; height: 1px; background: var(--muted);
+    animation: expandLine 1s ease forwards 1.4s;
+    transform-origin: left; transform: scaleX(0);
+  }
+  @keyframes expandLine { to { transform: scaleX(1); } }
+
+  /* ── Sections ───────────────────────────────────────────────────────── */
+  .section {
+    padding: 72px 60px;
+    border-bottom: 1px solid var(--border);
+    opacity: 0; transform: translateY(30px);
+    transition: opacity 0.6s ease, transform 0.6s ease, border-color 0.35s;
+  }
+  .section.visible { opacity: 1; transform: translateY(0); }
+
+  .section-label {
+    font-size: 10px; letter-spacing: 0.3em; color: var(--accent);
+    text-transform: uppercase; margin-bottom: 40px;
+    display: flex; align-items: center; gap: 16px; transition: color 0.3s;
+  }
+  .section-label::after { content: ''; flex: 1; height: 1px; background: var(--border); transition: background 0.3s; }
+
+  /* ── Education ──────────────────────────────────────────────────────── */
+  .edu-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1px; background: var(--border); border: 1px solid var(--border);
+    transition: background 0.35s, border-color 0.35s;
+  }
+  .edu-card { background: var(--bg); padding: 32px; transition: background 0.2s; }
+  .edu-card:hover { background: var(--surface); }
+  .edu-school { font-family: 'Syne', sans-serif; font-size: 17px; font-weight: 700; margin-bottom: 8px; }
+  .edu-degree { font-size: 12px; color: var(--muted); margin-bottom: 6px; font-style: italic; }
+  .edu-meta { font-size: 11px; color: var(--muted); margin-bottom: 14px; }
+  .edu-grade {
+    display: inline-block; background: var(--surface); border: 1px solid var(--border);
+    padding: 5px 12px; font-size: 12px; color: var(--accent); letter-spacing: 0.1em;
+    margin-top: 4px; transition: background 0.35s, border-color 0.35s, color 0.3s;
+  }
+
+  /* ── Projects ───────────────────────────────────────────────────────── */
+  .projects-list {
+    display: flex; flex-direction: column; gap: 1px;
+    background: var(--border); border: 1px solid var(--border);
+    transition: background 0.35s, border-color 0.35s;
+  }
+  .project-card {
+    background: var(--bg); padding: 36px;
+    transition: background 0.2s; position: relative;
+    text-decoration: none; color: inherit; display: block;
+  }
+  .project-card:hover { background: var(--surface); }
+
+  .project-num {
+    position: absolute; top: 36px; right: 36px;
+    font-size: 11px; color: var(--border); letter-spacing: 0.1em;
+  }
+  .project-tech {
+    font-size: 10px; color: var(--accent2); letter-spacing: 0.15em;
+    text-transform: uppercase; margin-bottom: 10px;
+    padding-right: 40px;
+  }
+  .project-title {
+    font-family: 'Syne', sans-serif; font-size: clamp(18px, 3vw, 22px);
+    font-weight: 700; margin-bottom: 10px; line-height: 1.2; padding-right: 40px;
+  }
+  .project-date { font-size: 11px; color: var(--muted); margin-bottom: 18px; }
+  .project-bullets { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+  .project-bullets li {
+    font-size: 13px; line-height: 1.7; color: var(--muted);
+    padding-left: 16px; position: relative;
+  }
+  .project-bullets li::before { content: '▸'; position: absolute; left: 0; color: var(--accent); }
+
+  /* ── Internships ────────────────────────────────────────────────────── */
+  .internship-card {
+    background: var(--bg); border: 1px solid var(--border);
+    padding: 36px; margin-bottom: 1px;
+    transition: border-color 0.2s, background 0.35s;
+  }
+  .internship-card:hover { border-color: var(--accent); }
+  .internship-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    margin-bottom: 8px; flex-wrap: wrap; gap: 8px;
+  }
+  .internship-title { font-family: 'Syne', sans-serif; font-size: clamp(17px, 3vw, 20px); font-weight: 700; }
+  .internship-date { font-size: 11px; color: var(--accent); letter-spacing: 0.1em; white-space: nowrap; margin-top: 4px; }
+  .internship-company { font-size: 12px; color: var(--muted); margin-bottom: 20px; font-style: italic; line-height: 1.6; }
+
+  /* ── Skills ─────────────────────────────────────────────────────────── */
+  .skills-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1px; background: var(--border); border: 1px solid var(--border);
+    transition: background 0.35s, border-color 0.35s;
+  }
+  .skill-card {
+    background: var(--bg); padding: 24px;
+    transition: background 0.2s; position: relative; overflow: hidden;
+  }
+  .skill-card::after {
+    content: ''; position: absolute; bottom: 0; left: 0;
+    width: 0; height: 2px; background: var(--accent); transition: width 0.3s ease;
+  }
+  .skill-card:hover { background: var(--surface); }
+  .skill-card:hover::after { width: 100%; }
+  .skill-label { font-size: 10px; letter-spacing: 0.2em; color: var(--accent); text-transform: uppercase; margin-bottom: 10px; }
+  .skill-value { font-size: 13px; line-height: 1.7; color: var(--muted); }
+
+  /* ── Interests ──────────────────────────────────────────────────────── */
+  .interests-wrap { display: flex; flex-wrap: wrap; gap: 10px; }
+  .interest-tag {
+    border: 1px solid var(--border); padding: 9px 16px;
+    font-size: 12px; letter-spacing: 0.08em; color: var(--muted);
+    transition: all 0.2s;
+  }
+  .interest-tag:hover { border-color: var(--accent); color: var(--accent); background: var(--shadow); }
+
+  /* ── Footer ─────────────────────────────────────────────────────────── */
+  footer {
+    padding: 48px 60px;
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 20px;
+  }
+  .footer-name { font-family: 'Syne', sans-serif; font-size: 22px; font-weight: 800; }
+  .footer-links { display: flex; gap: 28px; flex-wrap: wrap; }
+  .footer-links a { font-size: 11px; letter-spacing: 0.15em; color: var(--muted); text-decoration: none; transition: color 0.2s; }
+  .footer-links a:hover { color: var(--accent); }
+
+  /* ── Animations ─────────────────────────────────────────────────────── */
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .blink { animation: blink 1s step-end infinite; color: var(--accent); }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* ── MOBILE ─────────────────────────────────────────────────────────── */
+  @media (max-width: 768px) {
+    .hero { padding: 90px 24px 72px; min-height: 100svh; }
+    .hero-grid { display: none; }
+    .scroll-hint { left: 24px; bottom: 24px; font-size: 10px; }
+
+    .section { padding: 52px 24px; }
+    .section-label { margin-bottom: 28px; }
+
+    .edu-grid { grid-template-columns: 1fr; }
+    .edu-card { padding: 24px; }
+
+    .project-card { padding: 24px; }
+    .project-num { top: 24px; right: 24px; }
+    .project-tech { padding-right: 32px; }
+    .project-title { padding-right: 32px; font-size: 18px; }
+    .project-bullets li { font-size: 13px; }
+
+    .internship-card { padding: 24px; }
+    .internship-header { flex-direction: column; gap: 4px; }
+    .internship-date { white-space: normal; }
+
+    .skills-grid { grid-template-columns: 1fr 1fr; }
+    .skill-card { padding: 20px; }
+
+    .interests-wrap { gap: 8px; }
+    .interest-tag { padding: 8px 12px; font-size: 11px; }
+
+    footer { padding: 36px 24px; flex-direction: column; align-items: flex-start; }
+    .footer-links { gap: 20px; }
+
+    .theme-toggle { top: 14px; right: 14px; padding: 6px 10px 6px 8px; }
+    .toggle-label { display: none; }
+  }
+
+  @media (max-width: 400px) {
+    .skills-grid { grid-template-columns: 1fr; }
+    .hero-contact { flex-direction: column; gap: 14px; }
+    .hero-contact a { font-size: 11px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Theme Toggle -->
+<div class="theme-toggle" id="themeToggle">
+  <span class="toggle-icon" id="toggleIcon">🌙</span>
+  <div class="toggle-track"><div class="toggle-thumb"></div></div>
+  <span class="toggle-label" id="toggleLabel">Dark</span>
+</div>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="hero-tag">// portfolio — v1.0.0</div>
+  <h1 class="hero-name">
+    Thiruvengadam
+    <span>TK<span class="blink">_</span></span>
+  </h1>
+  <p class="hero-desc">
+    B.Tech student in IoT & Automation who builds things —
+    from custom PCBs and embedded firmware to full-stack apps
+    and wireless sensor networks.
+  </p>
+  <div class="hero-contact">
+    <a href="mailto:tkthiruvengadam2605@gmail.com">tkthiruvengadam2605@gmail.com</a>
+    <a href="tel:+917397086633">+91 7397086633</a>
+    <a href="#">Perambalur, Tamil Nadu</a>
+  </div>
+  <div class="hero-grid" id="heroGrid"></div>
+  <div class="scroll-hint">SCROLL TO EXPLORE</div>
+</section>
+
+<!-- EDUCATION -->
+<section class="section">
+  <div class="section-label">01 — Education</div>
+  <div class="edu-grid">
+    <div class="edu-card">
+      <div class="edu-school">SASTRA Deemed University</div>
+      <div class="edu-degree">B.Tech CSE (IoT & Automation)</div>
+      <div class="edu-meta">Oct 2022 – Jun 2026 · Thanjavur</div>
+      <div class="edu-grade">CGPA 7.7</div>
+    </div>
+    <div class="edu-card">
+      <div class="edu-school">Golden Gates Vidhyashram</div>
+      <div class="edu-degree">CBSE · Perambalur</div>
+      <div class="edu-meta">2019 – 2022</div>
+      <div class="edu-grade">12th — 90.8%</div>
+      <div class="edu-grade">10th — 78.6%</div>
+    </div>
+    <div class="edu-card">
+      <div class="edu-school">JEE Mains</div>
+      <div class="edu-degree">National Engineering Entrance</div>
+      <div class="edu-meta">2022</div>
+      <div class="edu-grade">81st Percentile</div>
+    </div>
+  </div>
+</section>
+
+<!-- PROJECTS -->
+<section class="section">
+  <div class="section-label">02 — Projects</div>
+  <div class="projects-list">
+    <a class="project-card" href="projects/hydroponics.html">
+      <div class="project-num">01</div>
+      <div class="project-tech">Android · ESP32 · Firebase · Arduino C++</div>
+      <div class="project-title">Hydroponics Control System</div>
+      <div class="project-date">Feb – Apr 2025</div>
+      <ul class="project-bullets">
+        <li>Built and deployed an automated hydroponics system with real-time environmental monitoring and threshold-based control.</li>
+        <li>Developed an Android app in Java to display live sensor readings and push control commands to ESP32 nodes via Firebase Realtime DB.</li>
+        <li>Wired and programmed environmental sensors with Arduino C++ firmware to actuate pumps and grow-lights automatically.</li>
+      </ul>
+    </a>
+    <a class="project-card" href="projects/ir-blaster.html">
+      <div class="project-num">02</div>
+      <div class="project-tech">KiCad · CH552G · Flutter · Embedded C</div>
+      <div class="project-title">USB IR Blaster — Custom PCB Product</div>
+      <div class="project-date">Jan – Mar 2025</div>
+      <ul class="project-bullets">
+        <li>Designed, fabricated, and assembled a compact custom PCB from scratch — schematic capture and layout in KiCad, physically manufactured and hand-soldered.</li>
+        <li>Programmed the CH552G (8051-based MCU) with embedded C to act as a USB HID device, transmitting IR hex codes to control any IR-based appliance.</li>
+        <li>Built a companion Flutter Android app to send hex codes over USB; backend on Neon (PostgreSQL).</li>
+      </ul>
+    </a>
+    <a class="project-card" href="projects/ecommerce.html">
+      <div class="project-num">03</div>
+      <div class="project-tech">React · Node.js · MongoDB · Firebase</div>
+      <div class="project-title">E-Commerce Website</div>
+      <div class="project-date">Oct 2024</div>
+      <ul class="project-bullets">
+        <li>Built and shipped a full-stack e-commerce platform for a stationery shop — product listings, cart, and checkout end-to-end.</li>
+        <li>Node.js + Express REST API; MongoDB Atlas for storage; Firebase Auth for login; Tailwind CSS + Cloudinary on the frontend.</li>
+      </ul>
+    </a>
+  </div>
+</section>
+
+<!-- INTERNSHIPS -->
+<section class="section">
+  <div class="section-label">03 — Internships</div>
+  <div class="internship-card">
+    <div class="internship-header">
+      <div class="internship-title">MANET Waveform for SDRs</div>
+      <div class="internship-date">ONGOING</div>
+    </div>
+    <div class="internship-company">Shankar Secure Network Solutions (TBI at SASTRA) — Consultancy with CoreEL Technologies</div>
+    <ul class="project-bullets">
+      <li>Managing the overall pipeline of a MANET waveform project for Software Defined Radios (SDRs).</li>
+      <li>Designed an application layer UI to visualize SDR communications.</li>
+      <li>Validated connections and tested all layers via namespace and actual hardware.</li>
+    </ul>
+  </div>
+  <div class="internship-card">
+    <div class="internship-header">
+      <div class="internship-title">IoT Engineer Intern</div>
+      <div class="internship-date">APR 2024 – ONGOING</div>
+    </div>
+    <div class="internship-company">NWarehouse Pvt. Ltd.</div>
+    <ul class="project-bullets">
+      <li>Engineered and delivered a production-ready LoRaWAN gateway solution (Raspberry Pi + LoRa SX130x) to NWarehouse as a live customer deployment.</li>
+      <li>Took full ownership from development to handover — sensor node firmware, gateway setup, network server configuration, on-site testing, and final delivery.</li>
+      <li>Conducted pre-shipment QA testing of in-house IoT development boards before customer delivery — verified firmware, connectivity, and hardware functionality on each unit.</li>
+    </ul>
+  </div>
+  <div class="internship-card">
+    <div class="internship-header">
+      <div class="internship-title">IoT Embedded Systems Intern</div>
+      <div class="internship-date">JUL – SEP 2024</div>
+    </div>
+    <div class="internship-company">Emertxe Information Technologies (Online)</div>
+    <ul class="project-bullets">
+      <li>Hands-on training in embedded C, Linux device drivers, and IoT protocols — built projects using GPIO, UART, SPI, and I2C on real hardware.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- SKILLS -->
+<section class="section">
+  <div class="section-label">04 — Skills</div>
+  <div class="skills-grid">
+    <div class="skill-card"><div class="skill-label">Languages</div><div class="skill-value">C · C++ · Java · Python · JavaScript · HTML/CSS · Dart</div></div>
+    <div class="skill-card"><div class="skill-label">Databases</div><div class="skill-value">MongoDB · SQL · Firebase Realtime DB</div></div>
+    <div class="skill-card"><div class="skill-label">Frameworks</div><div class="skill-value">React · Node.js · Express · Flask · Flutter · Tailwind · Bootstrap</div></div>
+    <div class="skill-card"><div class="skill-label">Tools</div><div class="skill-value">KiCad · Git · VS Code · Android Studio · Arduino IDE · Firebase Console</div></div>
+    <div class="skill-card"><div class="skill-label">Hardware</div><div class="skill-value">ESP32 · Raspberry Pi · CH552G (8051 MCU) · SX1262 LoRa · LoRaWAN</div></div>
+    <div class="skill-card"><div class="skill-label">Soft Skills</div><div class="skill-value">Problem Solving · Teamwork · Adaptability · Critical Thinking</div></div>
+  </div>
+</section>
+
+<!-- INTERESTS -->
+<section class="section">
+  <div class="section-label">05 — Interests</div>
+  <div class="interests-wrap">
+    <div class="interest-tag">IoT & Embedded Systems</div>
+    <div class="interest-tag">PCB Design</div>
+    <div class="interest-tag">Firmware Design & Analysis</div>
+    <div class="interest-tag">Layer-wise Protocols</div>
+    <div class="interest-tag">Full-Stack Web Development</div>
+    <div class="interest-tag">Mobile App Development</div>
+    <div class="interest-tag">Machine Learning</div>
+    <div class="interest-tag">Wireless Sensor Networks</div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="footer-name">Thiruvengadam TK</div>
+  <div class="footer-links">
+    <a href="mailto:tkthiruvengadam2605@gmail.com">Email</a>
+    <a href="tel:+917397086633">Phone</a>
+  </div>
+</footer>
+
+<script>
+  // ── Theme toggle ─────────────────────────────────────────────────────
+  const html = document.documentElement;
+  const saved = localStorage.getItem('theme');
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const initial = saved || (prefersDark ? 'dark' : 'light');
+  html.setAttribute('data-theme', initial);
+  updateToggleUI(initial);
+
+  document.getElementById('themeToggle').addEventListener('click', () => {
+    const next = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', next);
+    localStorage.setItem('theme', next);
+    updateToggleUI(next);
+  });
+
+  function updateToggleUI(t) {
+    document.getElementById('toggleIcon').textContent = t === 'dark' ? '🌙' : '☀️';
+    document.getElementById('toggleLabel').textContent = t === 'dark' ? 'Dark' : 'Light';
+  }
+
+  // ── Hero grid ─────────────────────────────────────────────────────────
+  const grid = document.getElementById('heroGrid');
+  const cells = [];
+  for (let i = 0; i < 64; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'grid-cell';
+    grid.appendChild(cell);
+    cells.push(cell);
+  }
+  function animateGrid() {
+    cells[Math.floor(Math.random() * cells.length)].classList.toggle('lit');
+    setTimeout(animateGrid, Math.random() * 300 + 100);
+  }
+  setTimeout(animateGrid, 1200);
+
+  // ── Scroll reveal ─────────────────────────────────────────────────────
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(e => {
+      if (e.isIntersecting) { e.target.classList.add('visible'); observer.unobserve(e.target); }
+    });
+  }, { threshold: 0.08 });
+  document.querySelectorAll('.section').forEach(s => observer.observe(s));
+</script>
+</body>
+</html>

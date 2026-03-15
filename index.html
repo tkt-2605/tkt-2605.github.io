@@ -1,516 +1,404 @@
-[
-  {
-    "id": "mqtt-broker-1",
-    "type": "mqtt-broker",
-    "name": "Local Mosquitto",
-    "broker": "192.168.1.100",
-    "port": "1883",
-    "clientid": "nodered-nft-001",
-    "usetls": false,
-    "compatmode": false,
-    "keepalive": "60",
-    "cleansession": true,
-    "birthTopic": "", "birthQos": "0", "birthPayload": "",
-    "closeTopic": "", "closeQos": "0", "closePayload": "",
-    "willTopic": "",  "willQos": "0", "willPayload": ""
-  },
-
-  {
-    "id": "influx-config-1",
-    "type": "influxdb",
-    "hostname": "127.0.0.1",
-    "port": "8086",
-    "protocol": "http",
-    "database": "nft",
-    "name": "InfluxDB 2.x",
-    "usetls": false,
-    "tls": "",
-    "influxdbVersion": "2.0",
-    "url": "http://127.0.0.1:8086",
-    "rejectUnauthorized": false
-  },
-
-  { "id": "tab-nft",    "type": "tab", "label": "NFT Controller", "disabled": false, "info": "" },
-  { "id": "tab-dosing", "type": "tab", "label": "Dosing Engine",  "disabled": false, "info": "" },
-
-  {
-    "id": "comment-mqtt-in",
-    "type": "comment", "z": "tab-nft",
-    "name": "── MQTT IN ──────────────────────────────────────────────────────",
-    "info": "", "x": 140, "y": 40
-  },
-
-  {
-    "id": "mqtt-in-telemetry",
-    "type": "mqtt in", "z": "tab-nft",
-    "name": "telemetry", "topic": "nft/device/001/telemetry",
-    "qos": "1", "datatype": "json", "broker": "mqtt-broker-1",
-    "x": 120, "y": 100, "wires": [["switch-topic"]]
-  },
-  {
-    "id": "mqtt-in-alert",
-    "type": "mqtt in", "z": "tab-nft",
-    "name": "alert", "topic": "nft/device/001/alert",
-    "qos": "1", "datatype": "json", "broker": "mqtt-broker-1",
-    "x": 120, "y": 160, "wires": [["switch-topic"]]
-  },
-  {
-    "id": "mqtt-in-status",
-    "type": "mqtt in", "z": "tab-nft",
-    "name": "status", "topic": "nft/device/001/status",
-    "qos": "1", "datatype": "json", "broker": "mqtt-broker-1",
-    "x": 120, "y": 220, "wires": [["switch-topic"]]
-  },
-  {
-    "id": "mqtt-in-actuator",
-    "type": "mqtt in", "z": "tab-nft",
-    "name": "actuator", "topic": "nft/device/001/actuator",
-    "qos": "1", "datatype": "json", "broker": "mqtt-broker-1",
-    "x": 120, "y": 280, "wires": [["switch-topic"]]
-  },
-  {
-    "id": "mqtt-in-state-in",
-    "type": "mqtt in", "z": "tab-nft",
-    "name": "state (inbound)", "topic": "nft/device/001/state",
-    "qos": "1", "datatype": "json", "broker": "mqtt-broker-1",
-    "x": 120, "y": 340, "wires": [["switch-topic"]]
-  },
-
-  {
-    "id": "switch-topic",
-    "type": "switch", "z": "tab-nft",
-    "name": "Route by topic",
-    "property": "topic", "propertyType": "msg",
-    "rules": [
-      {"t": "cont", "v": "telemetry", "vt": "str"},
-      {"t": "cont", "v": "alert",     "vt": "str"},
-      {"t": "cont", "v": "status",    "vt": "str"},
-      {"t": "cont", "v": "actuator",  "vt": "str"},
-      {"t": "cont", "v": "/state",    "vt": "str"}
-    ],
-    "checkall": "false", "repair": false, "outputs": 5,
-    "x": 360, "y": 220,
-    "wires": [["fn-telemetry"], ["fn-alert"], ["fn-status"], ["fn-actuator"], ["fn-state-in"]]
-  },
-
-  {
-    "id": "fn-telemetry",
-    "type": "function", "z": "tab-nft",
-    "name": "Process Telemetry + Calibrate",
-    "func": "// ── Two-point calibration constants ──────────────────────────────\n// Replace these with your measured ADC values at known reference solutions\nconst PH_ADC_LOW   = 1200;  // ADC at pH 4.0 buffer\nconst PH_REAL_LOW  = 4.0;\nconst PH_ADC_HIGH  = 2800;  // ADC at pH 7.0 buffer\nconst PH_REAL_HIGH = 7.0;\nconst EC_ADC_LOW   = 800;   // ADC at 1.0 mS/cm standard\nconst EC_REAL_LOW  = 1.0;\nconst EC_ADC_HIGH  = 2400;  // ADC at 2.0 mS/cm standard\nconst EC_REAL_HIGH = 2.0;\n\nfunction twoPoint(adc, adcLow, realLow, adcHigh, realHigh) {\n    if (adcHigh === adcLow) return realLow; // prevent divide by zero\n    const slope = (realHigh - realLow) / (adcHigh - adcLow);\n    return realLow + slope * (adc - adcLow);\n}\n\n// ── EDGE CASE: payload missing or malformed ───────────────────────\nconst raw = msg.payload;\nif (!raw || typeof raw !== 'object') {\n    node.warn('Telemetry: invalid payload type — ' + typeof raw);\n    node.status({ fill: 'red', shape: 'dot', text: 'bad payload' });\n    return null;\n}\n\n// ── EDGE CASE: missing individual fields ─────────────────────────\nif (raw.temp === undefined || raw.ph === undefined || raw.ec === undefined) {\n    node.warn('Telemetry: missing fields — ' + JSON.stringify(raw));\n    node.status({ fill: 'red', shape: 'dot', text: 'missing fields' });\n    return null;\n}\n\n// ── EDGE CASE: NaN values (sensor disconnected / wire fault) ──────\nif (isNaN(raw.temp) || isNaN(raw.ph) || isNaN(raw.ec)) {\n    node.warn('Telemetry: NaN sensor value — ' + JSON.stringify(raw));\n    node.status({ fill: 'red', shape: 'dot', text: 'NaN sensor' });\n    return null;\n}\n\n// ── EDGE CASE: DS18B20 returns -127 when disconnected ─────────────\nif (raw.temp <= -126) {\n    node.warn('Telemetry: temp sensor disconnected (value=' + raw.temp + ')');\n    node.status({ fill: 'red', shape: 'dot', text: 'temp sensor fault' });\n    return null;\n}\n\nconst phReal = parseFloat(twoPoint(raw.ph, PH_ADC_LOW, PH_REAL_LOW, PH_ADC_HIGH, PH_REAL_HIGH).toFixed(2));\nconst ecRaw  = parseFloat(twoPoint(raw.ec, EC_ADC_LOW, EC_REAL_LOW, EC_ADC_HIGH, EC_REAL_HIGH).toFixed(3));\nconst temp   = parseFloat(parseFloat(raw.temp).toFixed(2));\n\n// ── EDGE CASE: calibrated value out of physical range ────────────\nlet rangeWarn = [];\nif (phReal < 0 || phReal > 14) rangeWarn.push('pH=' + phReal);\nif (ecRaw  < 0 || ecRaw  > 10) rangeWarn.push('EC=' + ecRaw);\nif (temp < -10 || temp   > 60) rangeWarn.push('T='  + temp);\nif (rangeWarn.length > 0) {\n    node.warn('Telemetry: out-of-range after calibration: ' + rangeWarn.join(', '));\n    // Still pass through — Node-RED logs it, dosing engine will clamp/skip\n}\n\n// ── EDGE CASE: stale reading guard (same ts as last) ─────────────\nconst last = flow.get('latest_telemetry');\nif (last && last.ts && raw.ts && raw.ts === last.ts) {\n    node.warn('Telemetry: duplicate timestamp, skipping');\n    return null;\n}\n\nconst calibrated = { ph: phReal, ec: ecRaw, temp: temp, ts: Date.now() };\nflow.set('latest_telemetry', calibrated);\n\nnode.status({ fill: 'green', shape: 'dot',\n    text: 'pH ' + phReal + '  EC ' + ecRaw + '  T ' + temp + '°C' });\n\n// InfluxDB point\nmsg.payload = [{\n    measurement: 'telemetry',\n    tags:   { device: 'nft-001' },\n    fields: { ph: phReal, ec: ecRaw, temp: temp },\n    timestamp: new Date(calibrated.ts)\n}];\n\nmsg.calibrated = calibrated;\nreturn msg;",
-    "outputs": 1,
-    "x": 620, "y": 100,
-    "wires": [["influx-telemetry", "link-out-telemetry"]]
-  },
-
-  {
-    "id": "link-out-telemetry",
-    "type": "link out", "z": "tab-nft",
-    "name": "→ Dosing Engine",
-    "links": ["link-in-telemetry"],
-    "x": 900, "y": 100, "wires": []
-  },
-
-  {
-    "id": "fn-alert",
-    "type": "function", "z": "tab-nft",
-    "name": "Process Alert",
-    "func": "const raw = msg.payload;\n\n// ── EDGE CASE: missing or empty payload ──────────────────────────\nif (!raw || typeof raw !== 'object') {\n    node.warn('Alert: invalid payload — ' + JSON.stringify(raw));\n    return null;\n}\n\nconst alertType = raw.alert || 'UNKNOWN';\n\n// ── EDGE CASE: unexpected alert type ─────────────────────────────\nconst knownAlerts = ['FLOAT_HIGH', 'FLOAT_LOW'];\nif (!knownAlerts.includes(alertType)) {\n    node.warn('Alert: unknown alert type received — ' + alertType);\n    // Still log it to InfluxDB, do not discard\n}\n\nconst ts = Date.now();\nflow.set('latest_alert', { type: alertType, ts: ts });\n\nnode.status({ fill: 'red', shape: 'dot', text: alertType + ' @ ' + new Date(ts).toTimeString().slice(0,8) });\n\nmsg.payload = [{\n    measurement: 'alerts',\n    tags:   { device: 'nft-001', alert_type: alertType },\n    fields: { value: 1, alert: alertType },\n    timestamp: new Date(ts)\n}];\nreturn msg;",
-    "outputs": 1,
-    "x": 580, "y": 160,
-    "wires": [["influx-alerts"]]
-  },
-
-  {
-    "id": "fn-status",
-    "type": "function", "z": "tab-nft",
-    "name": "Process Status",
-    "func": "const raw = msg.payload;\n\n// ── EDGE CASE: missing payload ───────────────────────────────────\nif (!raw || typeof raw !== 'object') {\n    node.warn('Status: invalid payload — ' + JSON.stringify(raw));\n    return null;\n}\n\nconst state = raw.state || 'UNKNOWN';\n\n// ── EDGE CASE: unknown state string ──────────────────────────────\nconst knownStates = ['INIT','RUNNING','SAFETY','MAINTENANCE','OFFLINE','UNKNOWN'];\nif (!knownStates.includes(state)) {\n    node.warn('Status: unexpected state value — ' + state);\n}\n\nconst ts = Date.now();\nconst prev = flow.get('latest_status');\n\n// ── EDGE CASE: log state transitions ─────────────────────────────\nif (prev && prev.state !== state) {\n    node.warn('Status: state transition ' + prev.state + ' → ' + state);\n}\n\nflow.set('latest_status', { state: state, ts: ts });\n\nconst stateColors = { RUNNING: 'green', MAINTENANCE: 'yellow', SAFETY: 'red', OFFLINE: 'grey', INIT: 'blue' };\nnode.status({ fill: stateColors[state] || 'grey', shape: 'dot', text: state });\n\nconst stateMap = { INIT: 0, RUNNING: 1, MAINTENANCE: 2, SAFETY: 3, OFFLINE: -1 };\nconst stateInt = stateMap[state] !== undefined ? stateMap[state] : -99;\n\nmsg.payload = [{\n    measurement: 'device_status',\n    tags:   { device: 'nft-001', state: state },\n    fields: { state_str: state, state_int: stateInt },\n    timestamp: new Date(ts)\n}];\nreturn msg;",
-    "outputs": 1,
-    "x": 590, "y": 220,
-    "wires": [["influx-status"]]
-  },
-
-  {
-    "id": "fn-actuator",
-    "type": "function", "z": "tab-nft",
-    "name": "Process Actuator",
-    "func": "const raw = msg.payload;\n\n// ── EDGE CASE: missing payload ───────────────────────────────────\nif (!raw || typeof raw !== 'object') {\n    node.warn('Actuator: invalid payload — ' + JSON.stringify(raw));\n    return null;\n}\n\nconst pump  = raw.pump  || 'UNKNOWN';\nconst state = raw.state || 'UNKNOWN';\n\n// ── EDGE CASE: unknown pump name ─────────────────────────────────\nconst knownPumps = ['A','B','PHDOWN','WATERIN','WATEROUT'];\nif (!knownPumps.includes(pump)) {\n    node.warn('Actuator: unknown pump — ' + pump);\n}\n\n// ── EDGE CASE: unknown state value ───────────────────────────────\nif (state !== 'ON' && state !== 'OFF') {\n    node.warn('Actuator: unexpected state — ' + state);\n}\n\nconst ts = Date.now();\nlet pumpStates = flow.get('pump_states') || {};\n\n// ── EDGE CASE: pump was ON and received another ON (missed OFF) ───\nif (pumpStates[pump] && pumpStates[pump].state === 'ON' && state === 'ON') {\n    node.warn('Actuator: pump ' + pump + ' received ON while already ON — possible missed OFF');\n}\n\npumpStates[pump] = { state: state, ts: ts };\nflow.set('pump_states', pumpStates);\n\nconst stateInt = state === 'ON' ? 1 : 0;\nnode.status({ fill: state === 'ON' ? 'yellow' : 'green', shape: 'dot',\n    text: pump + ' ' + state });\n\nmsg.payload = [{\n    measurement: 'actuator_events',\n    tags:   { device: 'nft-001', pump: pump },\n    fields: { state_str: state, state_int: stateInt },\n    timestamp: new Date(ts)\n}];\nreturn msg;",
-    "outputs": 1,
-    "x": 590, "y": 280,
-    "wires": [["influx-actuator"]]
-  },
-
-  {
-    "id": "fn-state-in",
-    "type": "function", "z": "tab-nft",
-    "name": "Process Inbound State Cmd",
-    "func": "// Logs all state commands sent TO the device (audit trail)\nconst raw = msg.payload;\nconst cmd = typeof raw === 'string' ? raw : JSON.stringify(raw);\n\n// ── EDGE CASE: empty command ──────────────────────────────────────\nif (!cmd || cmd === '{}' || cmd === 'null') {\n    node.warn('State cmd: empty or null command received');\n    return null;\n}\n\nconst ts = Date.now();\nmsg.payload = [{\n    measurement: 'state_commands',\n    tags:   { device: 'nft-001' },\n    fields: { command: cmd },\n    timestamp: new Date(ts)\n}];\nreturn msg;",
-    "outputs": 1,
-    "x": 610, "y": 340,
-    "wires": [["influx-state-cmds"]]
-  },
-
-  {
-    "id": "influx-telemetry",
-    "type": "influxdb out", "z": "tab-nft",
-    "influxdb": "influx-config-1", "name": "→ telemetry",
-    "measurement": "telemetry", "precision": "ms",
-    "precisionV18FluxV20": "ms", "org": "YOUR_ORG", "bucket": "nft",
-    "x": 960, "y": 140, "wires": []
-  },
-  {
-    "id": "influx-alerts",
-    "type": "influxdb out", "z": "tab-nft",
-    "influxdb": "influx-config-1", "name": "→ alerts",
-    "measurement": "alerts", "precision": "ms",
-    "precisionV18FluxV20": "ms", "org": "YOUR_ORG", "bucket": "nft",
-    "x": 920, "y": 160, "wires": []
-  },
-  {
-    "id": "influx-status",
-    "type": "influxdb out", "z": "tab-nft",
-    "influxdb": "influx-config-1", "name": "→ device_status",
-    "measurement": "device_status", "precision": "ms",
-    "precisionV18FluxV20": "ms", "org": "YOUR_ORG", "bucket": "nft",
-    "x": 950, "y": 220, "wires": []
-  },
-  {
-    "id": "influx-actuator",
-    "type": "influxdb out", "z": "tab-nft",
-    "influxdb": "influx-config-1", "name": "→ actuator_events",
-    "measurement": "actuator_events", "precision": "ms",
-    "precisionV18FluxV20": "ms", "org": "YOUR_ORG", "bucket": "nft",
-    "x": 960, "y": 280, "wires": []
-  },
-  {
-    "id": "influx-state-cmds",
-    "type": "influxdb out", "z": "tab-nft",
-    "influxdb": "influx-config-1", "name": "→ state_commands",
-    "measurement": "state_commands", "precision": "ms",
-    "precisionV18FluxV20": "ms", "org": "YOUR_ORG", "bucket": "nft",
-    "x": 960, "y": 340, "wires": []
-  },
-
-  {
-    "id": "http-in-latest",
-    "type": "http in", "z": "tab-nft",
-    "name": "GET /api/nft/latest", "url": "/api/nft/latest", "method": "get",
-    "x": 150, "y": 500, "wires": [["fn-api-latest"]]
-  },
-  {
-    "id": "http-in-history",
-    "type": "http in", "z": "tab-nft",
-    "name": "GET /api/nft/history", "url": "/api/nft/history", "method": "get",
-    "x": 150, "y": 560, "wires": [["fn-api-history"]]
-  },
-  {
-    "id": "http-in-pumps",
-    "type": "http in", "z": "tab-nft",
-    "name": "GET /api/nft/pumps", "url": "/api/nft/pumps", "method": "get",
-    "x": 150, "y": 620, "wires": [["fn-api-pumps"]]
-  },
-  {
-    "id": "http-in-alerts",
-    "type": "http in", "z": "tab-nft",
-    "name": "GET /api/nft/alerts", "url": "/api/nft/alerts", "method": "get",
-    "x": 150, "y": 680, "wires": [["fn-api-alerts"]]
-  },
-  {
-    "id": "http-in-cmd",
-    "type": "http in", "z": "tab-nft",
-    "name": "POST /api/nft/cmd", "url": "/api/nft/cmd", "method": "post",
-    "x": 150, "y": 740, "wires": [["fn-api-cmd"]]
-  },
-  {
-    "id": "http-in-state",
-    "type": "http in", "z": "tab-nft",
-    "name": "POST /api/nft/state", "url": "/api/nft/state", "method": "post",
-    "x": 150, "y": 800, "wires": [["fn-api-state"]]
-  },
-
-  {
-    "id": "fn-api-latest",
-    "type": "function", "z": "tab-nft",
-    "name": "Build latest response",
-    "func": "const telemetry  = flow.get('latest_telemetry') || null;\nconst status     = flow.get('latest_status')    || null;\nconst pumpStates = flow.get('pump_states')       || {};\nconst alert      = flow.get('latest_alert')      || null;\nconst sys        = flow.get('sys')               || {};\nconst reading    = flow.get('latest_reading_compensated') || null;\n\n// ── EDGE CASE: no telemetry yet (device never connected) ─────────\nconst now = Date.now();\nconst STALE_MS = 30000; // 30s — two missed sample cycles\nlet telemetryStale = false;\nif (!telemetry) {\n    telemetryStale = true;\n} else if (now - telemetry.ts > STALE_MS) {\n    telemetryStale = true;\n    node.warn('Latest: telemetry is stale (' + Math.round((now - telemetry.ts)/1000) + 's old)');\n}\n\n// ── EDGE CASE: device status unknown (never heard from) ──────────\nconst statusUnknown = !status;\n\nmsg.payload = {\n    device:          'nft-001',\n    ts:               now,\n    telemetry:        telemetry,\n    telemetry_stale:  telemetryStale,\n    ec_compensated:   reading ? reading.ec_compensated : null,\n    status:           status,\n    status_unknown:   statusUnknown,\n    pumps:            pumpStates,\n    latest_alert:     alert,\n    targets: {\n        ph:          sys.target_ph    || null,\n        ec:          sys.target_ec    || null,\n        ph_deadband: sys.ph_deadband  || null,\n        ec_deadband: sys.ec_deadband  || null\n    }\n};\nmsg.statusCode = 200;\nreturn msg;",
-    "outputs": 1,
-    "x": 420, "y": 500, "wires": [["http-response"]]
-  },
-
-  {
-    "id": "fn-api-history",
-    "type": "function", "z": "tab-nft",
-    "name": "Build InfluxDB history query",
-    "func": "const range       = msg.req.query.range       || '1h';\nconst measurement = msg.req.query.measurement || 'telemetry';\nconst device      = msg.req.query.device      || 'nft-001';\n\nconst validRanges = ['15m','30m','1h','6h','12h','24h','7d','30d'];\nconst validMeas   = ['telemetry','alerts','device_status','actuator_events','state_commands','dose_events'];\n\n// ── EDGE CASE: invalid range or measurement — return 400 ─────────\nif (!validRanges.includes(range)) {\n    msg.payload = { error: 'Invalid range. Valid: ' + validRanges.join(', ') };\n    msg.statusCode = 400;\n    return msg;\n}\nif (!validMeas.includes(measurement)) {\n    msg.payload = { error: 'Invalid measurement. Valid: ' + validMeas.join(', ') };\n    msg.statusCode = 400;\n    return msg;\n}\n\n// ── EDGE CASE: device param injection guard ───────────────────────\nconst safeDevice = device.replace(/[^a-zA-Z0-9_-]/g, '');\nif (safeDevice !== device) {\n    msg.payload = { error: 'Invalid device id' };\n    msg.statusCode = 400;\n    return msg;\n}\n\nmsg.query = `\nfrom(bucket: \"nft\")\n  |> range(start: -${range})\n  |> filter(fn: (r) => r._measurement == \"${measurement}\")\n  |> filter(fn: (r) => r.device == \"${safeDevice}\")\n  |> sort(columns: [\"_time\"], desc: false)\n`;\nmsg._reqDevice = safeDevice;\nmsg._reqMeasurement = measurement;\nmsg._reqRange = range;\nreturn msg;",
-    "outputs": 1,
-    "x": 430, "y": 560, "wires": [["influx-query-history"]]
-  },
-
-  {
-    "id": "influx-query-history",
-    "type": "influxdb in", "z": "tab-nft",
-    "influxdb": "influx-config-1", "name": "Query history",
-    "query": "", "rawOutput": false, "precision": "ms", "org": "YOUR_ORG",
-    "x": 680, "y": 560, "wires": [["fn-format-history"]]
-  },
-
-  {
-    "id": "fn-format-history",
-    "type": "function", "z": "tab-nft",
-    "name": "Format history response",
-    "func": "const rows = msg.payload || [];\n\n// ── EDGE CASE: InfluxDB returned error object instead of array ────\nif (!Array.isArray(rows)) {\n    node.warn('History: InfluxDB returned non-array: ' + JSON.stringify(rows));\n    msg.payload = { error: 'Database query failed', detail: JSON.stringify(rows) };\n    msg.statusCode = 500;\n    return msg;\n}\n\nmsg.payload = {\n    device:      msg._reqDevice,\n    measurement: msg._reqMeasurement,\n    range:       msg._reqRange,\n    count:       rows.length,\n    data:        rows\n};\nmsg.statusCode = 200;\nreturn msg;",
-    "outputs": 1,
-    "x": 910, "y": 560, "wires": [["http-response"]]
-  },
-
-  {
-    "id": "fn-api-pumps",
-    "type": "function", "z": "tab-nft",
-    "name": "Build pumps response",
-    "func": "const pumpStates = flow.get('pump_states') || {};\nconst now = Date.now();\n\n// ── EDGE CASE: annotate stale pump states (pump ON for too long) ──\nconst STUCK_ON_MS = 65000; // longer than max pump duration (60s) + margin\nlet warnings = [];\nObject.entries(pumpStates).forEach(([pump, s]) => {\n    if (s.state === 'ON' && (now - s.ts) > STUCK_ON_MS) {\n        warnings.push(pump + ' has been ON for ' + Math.round((now - s.ts)/1000) + 's — possible stuck pump');\n        node.warn('Pumps: ' + pump + ' appears stuck ON');\n    }\n});\n\nmsg.payload = { device: 'nft-001', ts: now, pumps: pumpStates, warnings: warnings };\nmsg.statusCode = 200;\nreturn msg;",
-    "outputs": 1,
-    "x": 410, "y": 620, "wires": [["http-response"]]
-  },
-
-  {
-    "id": "fn-api-alerts",
-    "type": "function", "z": "tab-nft",
-    "name": "Query recent alerts",
-    "func": "const range  = msg.req.query.range  || '24h';\nconst device = msg.req.query.device || 'nft-001';\n\nconst validRanges = ['1h','6h','12h','24h','7d','30d'];\nif (!validRanges.includes(range)) {\n    msg.payload = { error: 'Invalid range. Valid: ' + validRanges.join(', ') };\n    msg.statusCode = 400;\n    return msg;\n}\n\nconst safeDevice = device.replace(/[^a-zA-Z0-9_-]/g, '');\nif (safeDevice !== device) {\n    msg.payload = { error: 'Invalid device id' };\n    msg.statusCode = 400;\n    return msg;\n}\n\nmsg.query = `\nfrom(bucket: \"nft\")\n  |> range(start: -${range})\n  |> filter(fn: (r) => r._measurement == \"alerts\")\n  |> filter(fn: (r) => r.device == \"${safeDevice}\")\n  |> sort(columns: [\"_time\"], desc: true)\n`;\nmsg._reqDevice = safeDevice;\nmsg._reqRange  = range;\nreturn msg;",
-    "outputs": 1,
-    "x": 410, "y": 680, "wires": [["influx-query-alerts"]]
-  },
-
-  {
-    "id": "influx-query-alerts",
-    "type": "influxdb in", "z": "tab-nft",
-    "influxdb": "influx-config-1", "name": "Query alerts",
-    "query": "", "rawOutput": false, "precision": "ms", "org": "YOUR_ORG",
-    "x": 650, "y": 680, "wires": [["fn-format-alerts"]]
-  },
-
-  {
-    "id": "fn-format-alerts",
-    "type": "function", "z": "tab-nft",
-    "name": "Format alerts response",
-    "func": "const rows = msg.payload || [];\nif (!Array.isArray(rows)) {\n    msg.payload = { error: 'Database query failed', detail: JSON.stringify(rows) };\n    msg.statusCode = 500;\n    return msg;\n}\nmsg.payload = { device: msg._reqDevice, range: msg._reqRange, count: rows.length, alerts: rows };\nmsg.statusCode = 200;\nreturn msg;",
-    "outputs": 1,
-    "x": 870, "y": 680, "wires": [["http-response"]]
-  },
-
-  {
-    "id": "fn-api-cmd",
-    "type": "function", "z": "tab-nft",
-    "name": "Validate + forward pump cmd",
-    "func": "const body = msg.payload || {};\n\n// ── EDGE CASE: missing body ───────────────────────────────────────\nif (!body || typeof body !== 'object') {\n    msg.payload = { error: 'Request body must be JSON object' };\n    msg.statusCode = 400;\n    return [null, msg];\n}\n\nconst validPumps = ['A','B','PHDOWN','WATERIN','WATEROUT'];\nconst pump       = body.pump;\nconst duration   = parseInt(body.duration);\n\n// ── EDGE CASE: missing pump field ────────────────────────────────\nif (!pump) {\n    msg.payload = { error: 'Missing field: pump' };\n    msg.statusCode = 400;\n    return [null, msg];\n}\n\n// ── EDGE CASE: invalid pump name ─────────────────────────────────\nif (!validPumps.includes(pump)) {\n    msg.payload = { error: 'Invalid pump. Valid: ' + validPumps.join(', ') };\n    msg.statusCode = 400;\n    return [null, msg];\n}\n\n// ── EDGE CASE: missing or non-numeric duration ────────────────────\nif (body.duration === undefined || body.duration === null) {\n    msg.payload = { error: 'Missing field: duration' };\n    msg.statusCode = 400;\n    return [null, msg];\n}\nif (isNaN(duration)) {\n    msg.payload = { error: 'duration must be a number (ms)' };\n    msg.statusCode = 400;\n    return [null, msg];\n}\n\n// ── EDGE CASE: duration out of bounds ────────────────────────────\nif (duration < 100) {\n    msg.payload = { error: 'duration too short — minimum 100ms' };\n    msg.statusCode = 400;\n    return [null, msg];\n}\nif (duration > 60000) {\n    msg.payload = { error: 'duration too long — maximum 60000ms (60s)' };\n    msg.statusCode = 400;\n    return [null, msg];\n}\n\n// ── EDGE CASE: device not in operational state ────────────────────\nconst status = flow.get('latest_status');\nif (!status) {\n    msg.payload = { error: 'Device state unknown — not yet heard from device' };\n    msg.statusCode = 503;\n    return [null, msg];\n}\nif (status.state !== 'RUNNING' && status.state !== 'MAINTENANCE') {\n    msg.payload = { error: 'Device not accepting commands', current_state: status.state };\n    msg.statusCode = 409;\n    return [null, msg];\n}\n\n// ── EDGE CASE: pump already ON (from flow context) ────────────────\nconst pumpStates = flow.get('pump_states') || {};\nif (pumpStates[pump] && pumpStates[pump].state === 'ON') {\n    msg.payload = { error: 'Pump ' + pump + ' is already ON', pump: pump };\n    msg.statusCode = 409;\n    return [null, msg];\n}\n\n// ── EDGE CASE: any other pump already ON (interlock) ─────────────\nconst onPumps = Object.entries(pumpStates)\n    .filter(([p, s]) => s.state === 'ON' && p !== pump)\n    .map(([p]) => p);\nif (onPumps.length > 0) {\n    msg.payload = { error: 'Another pump is already running: ' + onPumps.join(', '), active: onPumps };\n    msg.statusCode = 409;\n    return [null, msg];\n}\n\nmsg.topic   = 'nft/device/001/cmd';\nmsg.payload = JSON.stringify({ pump: pump, duration: duration });\nreturn [msg, null];",
-    "outputs": 2,
-    "x": 420, "y": 740,
-    "wires": [["mqtt-out-cmd", "fn-cmd-ack"], ["http-response"]]
-  },
-
-  {
-    "id": "fn-cmd-ack",
-    "type": "function", "z": "tab-nft",
-    "name": "CMD ack",
-    "func": "// ── EDGE CASE: payload parse failure ─────────────────────────────\nlet sent;\ntry {\n    sent = JSON.parse(msg.payload);\n} catch(e) {\n    msg.payload = { error: 'Failed to parse sent command' };\n    msg.statusCode = 500;\n    return msg;\n}\nmsg.payload = { ok: true, sent: sent };\nmsg.statusCode = 200;\nreturn msg;",
-    "outputs": 1,
-    "x": 680, "y": 760, "wires": [["http-response"]]
-  },
-
-  {
-    "id": "mqtt-out-cmd",
-    "type": "mqtt out", "z": "tab-nft",
-    "name": "→ MQTT cmd", "topic": "",
-    "qos": "1", "retain": "false", "broker": "mqtt-broker-1",
-    "x": 680, "y": 720, "wires": []
-  },
-
-  {
-    "id": "fn-api-state",
-    "type": "function", "z": "tab-nft",
-    "name": "Validate + forward state cmd",
-    "func": "const body = msg.payload || {};\n\n// ── EDGE CASE: missing body ───────────────────────────────────────\nif (!body || typeof body !== 'object') {\n    msg.payload = { error: 'Request body must be JSON object' };\n    msg.statusCode = 400;\n    return [null, msg];\n}\n\nconst validStates = ['RUNNING','MAINTENANCE','SAFETY'];\nconst newState    = body.state;\n\n// ── EDGE CASE: missing state field ───────────────────────────────\nif (!newState) {\n    msg.payload = { error: 'Missing field: state' };\n    msg.statusCode = 400;\n    return [null, msg];\n}\n\n// ── EDGE CASE: invalid state value ───────────────────────────────\nif (!validStates.includes(newState)) {\n    msg.payload = { error: 'Invalid state. Valid: ' + validStates.join(', ') };\n    msg.statusCode = 400;\n    return [null, msg];\n}\n\n// ── EDGE CASE: already in requested state (warn but allow) ───────\nconst current = flow.get('latest_status');\nif (current && current.state === newState) {\n    node.warn('State cmd: device already in state ' + newState);\n    // Allow through — device will ack and re-publish, which is harmless\n}\n\n// ── EDGE CASE: forcing SAFETY via API — warn operator ────────────\nif (newState === 'SAFETY') {\n    node.warn('State cmd: SAFETY state manually triggered via API');\n}\n\nmsg.topic   = 'nft/device/001/state';\nmsg.payload = JSON.stringify({ state: newState });\nreturn [msg, null];",
-    "outputs": 2,
-    "x": 420, "y": 800,
-    "wires": [["mqtt-out-state", "fn-state-ack"], ["http-response"]]
-  },
-
-  {
-    "id": "fn-state-ack",
-    "type": "function", "z": "tab-nft",
-    "name": "State ack",
-    "func": "let sent;\ntry {\n    sent = JSON.parse(msg.payload);\n} catch(e) {\n    msg.payload = { error: 'Failed to parse sent command' };\n    msg.statusCode = 500;\n    return msg;\n}\nmsg.payload = { ok: true, sent: sent };\nmsg.statusCode = 200;\nreturn msg;",
-    "outputs": 1,
-    "x": 680, "y": 820, "wires": [["http-response"]]
-  },
-
-  {
-    "id": "mqtt-out-state",
-    "type": "mqtt out", "z": "tab-nft",
-    "name": "→ MQTT state", "topic": "",
-    "qos": "1", "retain": "false", "broker": "mqtt-broker-1",
-    "x": 680, "y": 800, "wires": []
-  },
-
-  {
-    "id": "http-response",
-    "type": "http response", "z": "tab-nft",
-    "name": "HTTP Response", "statusCode": "",
-    "headers": { "Content-Type": "application/json" },
-    "x": 1120, "y": 660, "wires": []
-  },
-
-  {
-    "id": "link-in-dose-cmd",
-    "type": "link in", "z": "tab-nft",
-    "name": "dose cmd in",
-    "links": ["link-out-dose-cmd"],
-    "x": 560, "y": 720, "wires": [["mqtt-out-cmd"]]
-  },
-
-  {
-    "id": "comment-calib",
-    "type": "comment", "z": "tab-dosing",
-    "name": "── SYSTEM CONSTANTS ─────────────────────────────────────────────",
-    "info": "", "x": 220, "y": 40
-  },
-
-  {
-    "id": "fn-system-constants",
-    "type": "function", "z": "tab-dosing",
-    "name": "System Constants (edit here)",
-    "func": "// ════════════════════════════════════════════════════════════════\n// PUMP FLOW RATES  (ml per second)\n// Measure: run pump 10s into measuring cup → volume_ml / 10\n// ════════════════════════════════════════════════════════════════\nconst PUMP_A_FLOW_RATE     = 2.3;   // ml/sec ← replace\nconst PUMP_B_FLOW_RATE     = 2.3;   // ml/sec ← replace\nconst PH_DOWN_FLOW_RATE    = 1.5;   // ml/sec ← replace\nconst WATER_IN_FLOW_RATE   = 10.0;  // ml/sec ← replace\nconst WATER_OUT_FLOW_RATE  = 10.0;  // ml/sec ← replace\n\n// ════════════════════════════════════════════════════════════════\n// DOSE RESPONSE  (ml of solution to change by 1 unit in 1 litre)\n// Measure: fill 1L, add 1ml, mix, measure change\n//          dose_response = 1 / observed_change_per_1ml_in_1L\n// ════════════════════════════════════════════════════════════════\nconst EC_A_ML_PER_UNIT_PER_L    = 5.56; // ← replace\nconst EC_B_ML_PER_UNIT_PER_L    = 5.56; // ← replace\nconst PH_DOWN_ML_PER_UNIT_PER_L = 3.2;  // ← replace\n\n// ════════════════════════════════════════════════════════════════\n// SYSTEM VOLUME\n// ════════════════════════════════════════════════════════════════\nconst TANK_LITRES = 50.0; // ← your total nutrient solution volume\n\n// ════════════════════════════════════════════════════════════════\n// TARGETS AND DEADBANDS\n// ════════════════════════════════════════════════════════════════\nconst TARGET_PH    = 6.0;\nconst PH_DEADBAND  = 0.2;\nconst TARGET_EC    = 1.8;\nconst EC_DEADBAND  = 0.1;\n\n// ════════════════════════════════════════════════════════════════\n// DOSING SAFETY LIMITS\n// ════════════════════════════════════════════════════════════════\nconst BURST_FRACTION   = 0.5;    // dose 50% of calculated amount per cycle\nconst MIN_DOSE_MS      = 200;    // skip doses shorter than this\nconst MAX_DOSE_MS      = 30000;  // hard ceiling per dose event\nconst MIX_DELAY_MS     = 30000;  // wait after dose before acting on next reading\nconst DOSE_COOLDOWN_MS = 60000;  // min time between dose events per parameter\n\n// ════════════════════════════════════════════════════════════════\n// EC TEMPERATURE COMPENSATION\n// ════════════════════════════════════════════════════════════════\nconst EC_TEMP_COEFF = 0.02;  // 2% per °C\nconst EC_TEMP_REF   = 25.0;  // reference temperature\n\n// ════════════════════════════════════════════════════════════════\n// SAFETY LIMITS — abort dosing if values exceed these\n// ════════════════════════════════════════════════════════════════\nconst PH_ABORT_LOW  = 4.5;  // never dose if pH already below this\nconst PH_ABORT_HIGH = 8.0;  // never dose if pH already above this\nconst EC_ABORT_HIGH = 3.5;  // never dose nutrients if EC already above this\n\nflow.set('sys', {\n    pumps: {\n        A: PUMP_A_FLOW_RATE, B: PUMP_B_FLOW_RATE,\n        PHDOWN: PH_DOWN_FLOW_RATE,\n        WATERIN: WATER_IN_FLOW_RATE, WATEROUT: WATER_OUT_FLOW_RATE\n    },\n    dose: {\n        ec_a: EC_A_ML_PER_UNIT_PER_L,\n        ec_b: EC_B_ML_PER_UNIT_PER_L,\n        ph_down: PH_DOWN_ML_PER_UNIT_PER_L\n    },\n    tank:          TANK_LITRES,\n    target_ph:     TARGET_PH,\n    ph_deadband:   PH_DEADBAND,\n    target_ec:     TARGET_EC,\n    ec_deadband:   EC_DEADBAND,\n    burst:         BURST_FRACTION,\n    min_dose_ms:   MIN_DOSE_MS,\n    max_dose_ms:   MAX_DOSE_MS,\n    mix_delay_ms:  MIX_DELAY_MS,\n    cooldown_ms:   DOSE_COOLDOWN_MS,\n    ec_temp_coeff: EC_TEMP_COEFF,\n    ec_temp_ref:   EC_TEMP_REF,\n    ph_abort_low:  PH_ABORT_LOW,\n    ph_abort_high: PH_ABORT_HIGH,\n    ec_abort_high: EC_ABORT_HIGH\n});\n\nnode.status({ fill: 'green', shape: 'dot', text: 'Constants loaded' });\nreturn null;",
-    "outputs": 1,
-    "x": 220, "y": 100, "wires": [[]]
-  },
-
-  {
-    "id": "inject-load-constants",
-    "type": "inject", "z": "tab-dosing",
-    "name": "Load on start",
-    "props": [{"p": "payload"}],
-    "repeat": "", "crontab": "", "once": true, "onceDelay": "0.5",
-    "topic": "", "payload": "", "payloadType": "date",
-    "x": 180, "y": 160, "wires": [["fn-system-constants"]]
-  },
-
-  {
-    "id": "link-in-telemetry",
-    "type": "link in", "z": "tab-dosing",
-    "name": "calibrated telemetry in",
-    "links": ["link-out-telemetry"],
-    "x": 215, "y": 280, "wires": [["fn-dosing-engine"]]
-  },
-
-  {
-    "id": "fn-dosing-engine",
-    "type": "function", "z": "tab-dosing",
-    "name": "Dosing Engine",
-    "func": "const reading = msg.calibrated;\nconst sys     = flow.get('sys');\n\n// ── EDGE CASE: constants not loaded yet ──────────────────────────\nif (!sys) {\n    node.warn('Dosing: system constants not loaded');\n    node.status({ fill: 'grey', shape: 'ring', text: 'constants not loaded' });\n    return null;\n}\n\n// ── EDGE CASE: no calibrated reading on message ───────────────────\nif (!reading || typeof reading !== 'object') {\n    node.warn('Dosing: no calibrated reading on message');\n    return null;\n}\n\n// ── EDGE CASE: block on non-operational device state ─────────────\nconst status = flow.get('latest_status');\nconst blockStates = ['SAFETY','OFFLINE','INIT',null,undefined];\nif (!status || blockStates.includes(status.state)) {\n    node.status({ fill: 'red', shape: 'dot',\n        text: 'BLOCKED — ' + (status ? status.state : 'unknown') });\n    return null;\n}\n\n// ── EDGE CASE: another pump already running (interlock) ───────────\nconst pumpStates = flow.get('pump_states') || {};\nconst onPumps = Object.entries(pumpStates)\n    .filter(([p, s]) => s.state === 'ON')\n    .map(([p]) => p);\nif (onPumps.length > 0) {\n    node.status({ fill: 'yellow', shape: 'ring',\n        text: 'waiting — pump active: ' + onPumps.join(',') });\n    return null;\n}\n\nconst now = Date.now();\nlet cooldowns = flow.get('dose_cooldowns') || {};\nconst commands = [];\n\nfunction calcRuntime(required_change, ml_per_unit_per_L, flow_rate_ml_sec) {\n    // ── EDGE CASE: zero or negative flow rate (misconfigured) ────\n    if (!flow_rate_ml_sec || flow_rate_ml_sec <= 0) {\n        node.warn('Dosing: invalid flow rate — ' + flow_rate_ml_sec);\n        return { required_ml: 0, burst_ml: 0, runtime_ms: 0 };\n    }\n    const required_ml = required_change * ml_per_unit_per_L * sys.tank;\n    const burst_ml    = required_ml * sys.burst;\n    const runtime_ms  = Math.round((burst_ml / flow_rate_ml_sec) * 1000);\n    return {\n        required_ml: parseFloat(required_ml.toFixed(2)),\n        burst_ml:    parseFloat(burst_ml.toFixed(2)),\n        runtime_ms:  Math.min(Math.max(runtime_ms, 0), sys.max_dose_ms)\n    };\n}\n\n// ── EC temperature compensation ──────────────────────────────────\nconst ec_denom = 1 + sys.ec_temp_coeff * (reading.temp - sys.ec_temp_ref);\n// ── EDGE CASE: denominator near zero (extreme temp reading) ──────\nif (Math.abs(ec_denom) < 0.01) {\n    node.warn('Dosing: EC temp compensation denominator near zero — skipping');\n    return null;\n}\nconst ec_compensated = parseFloat((reading.ec / ec_denom).toFixed(3));\n\nreading.ec_compensated = ec_compensated;\nflow.set('latest_reading_compensated', reading);\n\n// ── EDGE CASE: abort if pH is in dangerous range ──────────────────\nif (reading.ph < sys.ph_abort_low) {\n    node.warn('Dosing: pH critically low (' + reading.ph + ') — all dosing aborted');\n    node.status({ fill: 'red', shape: 'dot', text: 'ABORT — pH critically low: ' + reading.ph });\n    return null;\n}\nif (reading.ph > sys.ph_abort_high) {\n    node.warn('Dosing: pH critically high (' + reading.ph + ') — all dosing aborted');\n    node.status({ fill: 'red', shape: 'dot', text: 'ABORT — pH critically high: ' + reading.ph });\n    return null;\n}\n\n// ── EDGE CASE: abort if EC is dangerously high ────────────────────\nif (ec_compensated > sys.ec_abort_high) {\n    node.warn('Dosing: EC critically high (' + ec_compensated + ') — nutrient dosing aborted');\n    node.status({ fill: 'red', shape: 'dot', text: 'ABORT — EC too high: ' + ec_compensated });\n    return null;\n}\n\n// ── pH control ───────────────────────────────────────────────────\nconst ph_error = reading.ph - sys.target_ph;\nif (ph_error > sys.ph_deadband) {\n    const cooldownOk = !cooldowns['ph_down'] || (now - cooldowns['ph_down']) >= sys.cooldown_ms;\n    const mixOk      = !cooldowns['mix_block'] || (now - cooldowns['mix_block']) >= sys.mix_delay_ms;\n    if (cooldownOk && mixOk) {\n        const dose = calcRuntime(ph_error, sys.dose.ph_down, sys.pumps.PHDOWN);\n        if (dose.runtime_ms >= sys.min_dose_ms) {\n            commands.push({ pump: 'PHDOWN', duration: dose.runtime_ms,\n                reason: 'pH too high', ph_error: parseFloat(ph_error.toFixed(3)),\n                required_ml: dose.required_ml, burst_ml: dose.burst_ml });\n            cooldowns['ph_down']   = now;\n            cooldowns['mix_block'] = now;\n        } else {\n            node.debug('pH dose below min_dose_ms (' + dose.runtime_ms + 'ms), skipping');\n        }\n    }\n} else if (ph_error < -sys.ph_deadband) {\n    // ── EDGE CASE: pH too low — no pH-up pump configured ─────────\n    node.warn('Dosing: pH too LOW (' + reading.ph.toFixed(2) + ') — pH-up not configured');\n    node.status({ fill: 'red', shape: 'ring', text: 'pH LOW — no pH-up pump' });\n}\n\n// ── EC control ───────────────────────────────────────────────────\nconst ec_error = sys.target_ec - ec_compensated;\nif (ec_error > sys.ec_deadband) {\n    const cooldownOk = !cooldowns['ec_dose']   || (now - cooldowns['ec_dose'])   >= sys.cooldown_ms;\n    const mixOk      = !cooldowns['mix_block'] || (now - cooldowns['mix_block']) >= sys.mix_delay_ms;\n    if (cooldownOk && mixOk) {\n        const half   = ec_error / 2;\n        const dose_a = calcRuntime(half, sys.dose.ec_a, sys.pumps.A);\n        const dose_b = calcRuntime(half, sys.dose.ec_b, sys.pumps.B);\n        let anyAdded = false;\n        if (dose_a.runtime_ms >= sys.min_dose_ms) {\n            commands.push({ pump: 'A', duration: dose_a.runtime_ms,\n                reason: 'EC too low (A)', ec_error: parseFloat(ec_error.toFixed(3)),\n                required_ml: dose_a.required_ml, burst_ml: dose_a.burst_ml });\n            anyAdded = true;\n        }\n        if (dose_b.runtime_ms >= sys.min_dose_ms) {\n            commands.push({ pump: 'B', duration: dose_b.runtime_ms,\n                reason: 'EC too low (B)', ec_error: parseFloat(ec_error.toFixed(3)),\n                required_ml: dose_b.required_ml, burst_ml: dose_b.burst_ml });\n            anyAdded = true;\n        }\n        if (anyAdded) {\n            cooldowns['ec_dose']   = now;\n            cooldowns['mix_block'] = now;\n        }\n    }\n} else if (ec_error < -sys.ec_deadband) {\n    // ── EDGE CASE: EC too high — dilution not automated ───────────\n    node.warn('Dosing: EC too HIGH (' + ec_compensated.toFixed(3) + ') — dilution not automated');\n    node.status({ fill: 'red', shape: 'ring', text: 'EC HIGH — add water manually' });\n}\n\nflow.set('dose_cooldowns', cooldowns);\n\nif (commands.length === 0) {\n    node.status({ fill: 'green', shape: 'dot',\n        text: 'OK — pH ' + reading.ph.toFixed(2) + ' EC ' + ec_compensated.toFixed(2) + ' T ' + reading.temp.toFixed(1) + '°C' });\n    return null;\n}\n\nmsg.dose_commands = commands;\nmsg.reading       = reading;\nnode.status({ fill: 'yellow', shape: 'dot',\n    text: 'DOSING: ' + commands.map(c => c.pump + ' ' + c.duration + 'ms').join(' | ') });\nreturn msg;",
-    "outputs": 1,
-    "x": 500, "y": 280,
-    "wires": [["fn-dose-sequencer"]]
-  },
-
-  {
-    "id": "fn-dose-sequencer",
-    "type": "function", "z": "tab-dosing",
-    "name": "Dose Sequencer",
-    "func": "const commands = msg.dose_commands || [];\nconst sys      = flow.get('sys');\n\n// ── EDGE CASE: empty command list ────────────────────────────────\nif (commands.length === 0) return null;\n\n// ── EDGE CASE: sys not loaded ─────────────────────────────────────\nif (!sys) {\n    node.warn('Sequencer: sys constants missing');\n    return null;\n}\n\n// ── EDGE CASE: double-check state before firing ───────────────────\nconst status = flow.get('latest_status');\nif (!status || (status.state !== 'RUNNING' && status.state !== 'MAINTENANCE')) {\n    node.warn('Sequencer: state changed before commands could fire — aborting');\n    return null;\n}\n\nnode.warn('DOSE PLAN: ' + JSON.stringify(commands.map(c => ({\n    pump: c.pump, ms: c.duration, ml: c.burst_ml, reason: c.reason\n}))));\n\n// Build InfluxDB log points\nconst influxPoints = commands.map(c => ({\n    measurement: 'dose_events',\n    tags:   { device: 'nft-001', pump: c.pump },\n    fields: {\n        duration_ms:  c.duration,\n        burst_ml:     c.burst_ml     || 0,\n        required_ml:  c.required_ml  || 0,\n        reason:       c.reason       || '',\n        ph_error:     c.ph_error     || 0,\n        ec_error:     c.ec_error     || 0\n    },\n    timestamp: new Date()\n}));\n\n// Send each command sequentially using node.send with delay\n// Commands are sent one at a time — next fires after previous duration + 2s buffer\nlet offset = 0;\ncommands.forEach((cmd, i) => {\n    const delay = offset;\n    setTimeout(() => {\n        // ── EDGE CASE: re-check state at fire time ────────────────\n        const currentStatus = flow.get('latest_status');\n        if (!currentStatus || (currentStatus.state !== 'RUNNING' && currentStatus.state !== 'MAINTENANCE')) {\n            node.warn('Sequencer: state changed mid-sequence — skipping ' + cmd.pump);\n            return;\n        }\n        // ── EDGE CASE: re-check pump not already ON at fire time ──\n        const ps = flow.get('pump_states') || {};\n        if (ps[cmd.pump] && ps[cmd.pump].state === 'ON') {\n            node.warn('Sequencer: pump ' + cmd.pump + ' already ON at fire time — skipping');\n            return;\n        }\n        node.send([{\n            topic:   'nft/device/001/cmd',\n            payload: JSON.stringify({ pump: cmd.pump, duration: cmd.duration })\n        }, null]);\n    }, delay);\n    offset += cmd.duration + 2000; // next command starts after this one finishes + 2s\n});\n\n// Return influx log immediately on output 2\nreturn [null, { payload: influxPoints }];",
-    "outputs": 2,
-    "x": 760, "y": 280,
-    "wires": [["link-out-dose-cmd"], ["influx-dose-events"]]
-  },
-
-  {
-    "id": "link-out-dose-cmd",
-    "type": "link out", "z": "tab-dosing",
-    "name": "→ MQTT cmd (via NFT tab)",
-    "links": ["link-in-dose-cmd"],
-    "x": 1000, "y": 260, "wires": []
-  },
-
-  {
-    "id": "influx-dose-events",
-    "type": "influxdb out", "z": "tab-dosing",
-    "influxdb": "influx-config-1", "name": "→ dose_events",
-    "measurement": "dose_events", "precision": "ms",
-    "precisionV18FluxV20": "ms", "org": "YOUR_ORG", "bucket": "nft",
-    "x": 1000, "y": 320, "wires": []
-  },
-
-  {
-    "id": "http-in-dose-config-get",
-    "type": "http in", "z": "tab-dosing",
-    "name": "GET /api/nft/dosing/config", "url": "/api/nft/dosing/config", "method": "get",
-    "x": 200, "y": 420, "wires": [["fn-dose-config-get"]]
-  },
-
-  {
-    "id": "fn-dose-config-get",
-    "type": "function", "z": "tab-dosing",
-    "name": "Return dosing config",
-    "func": "const sys = flow.get('sys');\n\n// ── EDGE CASE: constants never loaded ────────────────────────────\nif (!sys) {\n    msg.payload = { error: 'Dosing constants not loaded — trigger inject node or redeploy' };\n    msg.statusCode = 503;\n    return msg;\n}\n\nmsg.payload    = sys;\nmsg.statusCode = 200;\nreturn msg;",
-    "outputs": 1,
-    "x": 480, "y": 420, "wires": [["http-response-dosing"]]
-  },
-
-  {
-    "id": "http-in-dose-config-post",
-    "type": "http in", "z": "tab-dosing",
-    "name": "POST /api/nft/dosing/config", "url": "/api/nft/dosing/config", "method": "post",
-    "x": 200, "y": 480, "wires": [["fn-dose-config-post"]]
-  },
-
-  {
-    "id": "fn-dose-config-post",
-    "type": "function", "z": "tab-dosing",
-    "name": "Update dosing config",
-    "func": "const body = msg.payload || {};\n\n// ── EDGE CASE: missing or non-object body ────────────────────────\nif (!body || typeof body !== 'object') {\n    msg.payload = { error: 'Body must be a JSON object' };\n    msg.statusCode = 400;\n    return msg;\n}\n\nlet sys = flow.get('sys');\n\n// ── EDGE CASE: sys not loaded ─────────────────────────────────────\nif (!sys) {\n    msg.payload = { error: 'System constants not loaded yet' };\n    msg.statusCode = 503;\n    return msg;\n}\n\nconst allowed = ['target_ph','ph_deadband','target_ec','ec_deadband',\n                 'tank','burst','min_dose_ms','max_dose_ms','cooldown_ms',\n                 'ph_abort_low','ph_abort_high','ec_abort_high'];\n\n// ── EDGE CASE: value range validation per field ───────────────────\nconst ranges = {\n    target_ph:     [0, 14],\n    ph_deadband:   [0, 2],\n    target_ec:     [0, 5],\n    ec_deadband:   [0, 1],\n    tank:          [1, 10000],\n    burst:         [0.1, 1.0],\n    min_dose_ms:   [50, 5000],\n    max_dose_ms:   [1000, 60000],\n    cooldown_ms:   [10000, 3600000],\n    ph_abort_low:  [0, 6],\n    ph_abort_high: [7, 14],\n    ec_abort_high: [1, 10]\n};\n\nlet updated = [];\nlet errors  = [];\n\nallowed.forEach(k => {\n    if (body[k] === undefined) return;\n    const v = parseFloat(body[k]);\n    if (isNaN(v)) {\n        errors.push(k + ' must be a number');\n        return;\n    }\n    if (ranges[k]) {\n        const [min, max] = ranges[k];\n        if (v < min || v > max) {\n            errors.push(k + ' must be between ' + min + ' and ' + max);\n            return;\n        }\n    }\n    sys[k] = v;\n    updated.push(k);\n});\n\nif (errors.length > 0) {\n    msg.payload = { error: 'Validation failed', details: errors };\n    msg.statusCode = 400;\n    return msg;\n}\n\nif (updated.length === 0) {\n    msg.payload = { error: 'No valid fields provided. Allowed: ' + allowed.join(', ') };\n    msg.statusCode = 400;\n    return msg;\n}\n\nflow.set('sys', sys);\nmsg.payload    = { ok: true, updated: updated, config: sys };\nmsg.statusCode = 200;\nreturn msg;",
-    "outputs": 1,
-    "x": 480, "y": 480, "wires": [["http-response-dosing"]]
-  },
-
-  {
-    "id": "http-in-dose-history",
-    "type": "http in", "z": "tab-dosing",
-    "name": "GET /api/nft/dosing/history", "url": "/api/nft/dosing/history", "method": "get",
-    "x": 200, "y": 540, "wires": [["fn-dose-history-query"]]
-  },
-
-  {
-    "id": "fn-dose-history-query",
-    "type": "function", "z": "tab-dosing",
-    "name": "Query dose history",
-    "func": "const range  = msg.req.query.range  || '24h';\nconst device = msg.req.query.device || 'nft-001';\n\nconst validRanges = ['1h','6h','12h','24h','7d','30d'];\nif (!validRanges.includes(range)) {\n    msg.payload = { error: 'Invalid range. Valid: ' + validRanges.join(', ') };\n    msg.statusCode = 400;\n    return msg;\n}\n\nconst safeDevice = device.replace(/[^a-zA-Z0-9_-]/g, '');\nif (safeDevice !== device) {\n    msg.payload = { error: 'Invalid device id' };\n    msg.statusCode = 400;\n    return msg;\n}\n\nmsg.query = `\nfrom(bucket: \"nft\")\n  |> range(start: -${range})\n  |> filter(fn: (r) => r._measurement == \"dose_events\")\n  |> filter(fn: (r) => r.device == \"${safeDevice}\")\n  |> sort(columns: [\"_time\"], desc: true)\n`;\nmsg._reqDevice = safeDevice;\nmsg._reqRange  = range;\nreturn msg;",
-    "outputs": 1,
-    "x": 480, "y": 540, "wires": [["influx-query-dose"]]
-  },
-
-  {
-    "id": "influx-query-dose",
-    "type": "influxdb in", "z": "tab-dosing",
-    "influxdb": "influx-config-1", "name": "Query dose_events",
-    "query": "", "rawOutput": false, "precision": "ms", "org": "YOUR_ORG",
-    "x": 720, "y": 540, "wires": [["fn-dose-history-format"]]
-  },
-
-  {
-    "id": "fn-dose-history-format",
-    "type": "function", "z": "tab-dosing",
-    "name": "Format dose history",
-    "func": "const rows = msg.payload || [];\nif (!Array.isArray(rows)) {\n    msg.payload = { error: 'Database query failed', detail: JSON.stringify(rows) };\n    msg.statusCode = 500;\n    return msg;\n}\nmsg.payload    = { device: msg._reqDevice, range: msg._reqRange, count: rows.length, doses: rows };\nmsg.statusCode = 200;\nreturn msg;",
-    "outputs": 1,
-    "x": 940, "y": 540, "wires": [["http-response-dosing"]]
-  },
-
-  {
-    "id": "http-response-dosing",
-    "type": "http response", "z": "tab-dosing",
-    "name": "HTTP Response",
-    "statusCode": "",
-    "headers": { "Content-Type": "application/json" },
-    "x": 1160, "y": 480, "wires": []
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Thiruvengadam TK — Portfolio</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root[data-theme="dark"] {
+    --bg:#0a0a0a; --surface:#111; --border:#222;
+    --accent:#00ff88; --accent2:#0088ff;
+    --text:#e8e8e8; --muted:#666;
+    --tbg:#1a1a1a; --tbd:#333;
   }
-]
+  :root[data-theme="light"] {
+    --bg:#f5f4f0; --surface:#eceae4; --border:#d0cdc4;
+    --accent:#008844; --accent2:#0055cc;
+    --text:#1a1a1a; --muted:#888;
+    --tbg:#e0ded8; --tbd:#ccc;
+  }
+
+  *,*::before,*::after { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    background:var(--bg); color:var(--text);
+    font-family:'Space Mono',monospace;
+    transition:background .3s,color .3s;
+  }
+
+  /* theme toggle */
+  .tt {
+    position:fixed; top:12px; right:12px; z-index:999;
+    display:flex; align-items:center; gap:7px;
+    background:var(--tbg); border:1px solid var(--tbd);
+    padding:6px 11px 6px 8px; cursor:pointer; user-select:none;
+    transition:border-color .2s;
+  }
+  .tt:hover { border-color:var(--accent); }
+  .tt-track {
+    width:30px; height:17px; background:var(--border);
+    border-radius:999px; position:relative; transition:background .3s; flex-shrink:0;
+  }
+  [data-theme="dark"] .tt-track { background:var(--accent); }
+  .tt-thumb {
+    position:absolute; top:2px; left:2px; width:13px; height:13px;
+    background:var(--bg); border-radius:50%; transition:transform .3s;
+  }
+  [data-theme="dark"] .tt-thumb { transform:translateX(13px); }
+  .tt-icon { font-size:12px; }
+  .tt-lbl { font-size:9px; letter-spacing:.12em; color:var(--muted); text-transform:uppercase; }
+
+  /* layout — content centered, padding creates equal margins */
+  .w { width:100%; max-width:900px; margin:0 auto; padding:0 32px; }
+
+  /* hero */
+  .hero {
+    padding:64px 0 48px;
+    border-bottom:1px solid var(--border);
+  }
+  .h-tag {
+    font-size:10px; color:var(--accent); letter-spacing:.2em;
+    text-transform:uppercase; margin-bottom:14px;
+    opacity:0; animation:up .5s ease forwards .1s;
+  }
+  /*
+    Name sizing: let it scale fluidly.
+    On desktop: capped at 80px — looks great, centered.
+    On mobile: uses vw but based on content width (vw - padding*2).
+    "Thiruvengadam" wraps naturally — TK_ goes to next line.
+    No white-space:nowrap, no overflow.
+  */
+  .h-name {
+    font-family:'Syne',sans-serif; font-weight:800;
+    line-height:1.05; letter-spacing:-.02em; margin-bottom:20px;
+    opacity:0; animation:up .5s ease forwards .25s;
+    font-size: clamp(36px, 7vw, 80px);
+  }
+  .h-name span { display:block; color:var(--accent); }
+  .h-desc {
+    font-size:13px; line-height:1.85; color:var(--muted);
+    max-width:420px; margin-bottom:28px;
+    opacity:0; animation:up .5s ease forwards .4s;
+  }
+  .h-links {
+    display:flex; flex-direction:column; gap:9px;
+    opacity:0; animation:up .5s ease forwards .55s;
+  }
+  .h-links a {
+    color:var(--text); text-decoration:none; font-size:11px;
+    display:flex; align-items:center; gap:7px; transition:color .2s;
+  }
+  .h-links a:hover { color:var(--accent); }
+  .h-links a::before { content:'→'; color:var(--accent); flex-shrink:0; }
+
+  /* sections */
+  .sec {
+    padding:48px 0; border-bottom:1px solid var(--border);
+    opacity:0; transform:translateY(18px);
+    transition:opacity .5s,transform .5s;
+  }
+  .sec.on { opacity:1; transform:none; }
+  .lbl {
+    font-size:9px; letter-spacing:.28em; color:var(--accent);
+    text-transform:uppercase; margin-bottom:24px;
+    display:flex; align-items:center; gap:12px;
+  }
+  .lbl::after { content:''; flex:1; height:1px; background:var(--border); }
+
+  /* edu */
+  .eg {
+    display:grid; grid-template-columns:repeat(3,1fr);
+    gap:1px; background:var(--border); border:1px solid var(--border);
+  }
+  .ec { background:var(--bg); padding:22px; transition:background .2s; }
+  .ec:hover { background:var(--surface); }
+  .ec-s { font-family:'Syne',sans-serif; font-size:15px; font-weight:700; margin-bottom:5px; }
+  .ec-d { font-size:11px; color:var(--muted); margin-bottom:4px; font-style:italic; }
+  .ec-m { font-size:10px; color:var(--muted); margin-bottom:10px; }
+  .ec-g {
+    display:inline-block; background:var(--surface); border:1px solid var(--border);
+    padding:3px 9px; font-size:10px; color:var(--accent); margin-top:3px;
+  }
+
+  /* projects */
+  .pl { display:flex; flex-direction:column; gap:1px; background:var(--border); border:1px solid var(--border); }
+  .pc {
+    background:var(--bg); padding:26px; position:relative;
+    text-decoration:none; color:inherit; display:block; transition:background .2s;
+  }
+  .pc:hover { background:var(--surface); }
+  .pn { position:absolute; top:26px; right:26px; font-size:9px; color:var(--border); }
+  .pt { font-size:9px; color:var(--accent2); letter-spacing:.12em; text-transform:uppercase; margin-bottom:7px; padding-right:28px; }
+  .ph { font-family:'Syne',sans-serif; font-size:17px; font-weight:700; margin-bottom:6px; line-height:1.2; padding-right:28px; }
+  .pd { font-size:10px; color:var(--muted); margin-bottom:12px; }
+  .pb { list-style:none; display:flex; flex-direction:column; gap:7px; }
+  .pb li { font-size:12px; line-height:1.7; color:var(--muted); padding-left:13px; position:relative; }
+  .pb li::before { content:'▸'; position:absolute; left:0; color:var(--accent); }
+
+  /* internships */
+  .ic {
+    background:var(--bg); border:1px solid var(--border);
+    padding:26px; margin-bottom:1px; transition:border-color .2s;
+  }
+  .ic:hover { border-color:var(--accent); }
+  .ih { display:flex; justify-content:space-between; flex-wrap:wrap; gap:6px; margin-bottom:5px; }
+  .it { font-family:'Syne',sans-serif; font-size:16px; font-weight:700; }
+  .id { font-size:10px; color:var(--accent); letter-spacing:.08em; }
+  .ico { font-size:11px; color:var(--muted); margin-bottom:12px; font-style:italic; line-height:1.6; }
+
+  /* skills */
+  .sg {
+    display:grid; grid-template-columns:repeat(3,1fr);
+    gap:1px; background:var(--border); border:1px solid var(--border);
+  }
+  .sc { background:var(--bg); padding:18px; transition:background .2s; position:relative; overflow:hidden; }
+  .sc::after { content:''; position:absolute; bottom:0; left:0; width:0; height:2px; background:var(--accent); transition:width .3s; }
+  .sc:hover { background:var(--surface); }
+  .sc:hover::after { width:100%; }
+  .sl { font-size:9px; letter-spacing:.18em; color:var(--accent); text-transform:uppercase; margin-bottom:7px; }
+  .sv { font-size:12px; line-height:1.7; color:var(--muted); }
+
+  /* interests */
+  .iw { display:flex; flex-wrap:wrap; gap:8px; }
+  .itag { border:1px solid var(--border); padding:7px 12px; font-size:11px; color:var(--muted); transition:all .2s; }
+  .itag:hover { border-color:var(--accent); color:var(--accent); }
+
+  /* footer */
+  footer { padding:32px 0; }
+  .fw { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:14px; }
+  .fn { font-family:'Syne',sans-serif; font-size:18px; font-weight:800; }
+  .fl { display:flex; gap:20px; }
+  .fl a { font-size:11px; letter-spacing:.1em; color:var(--muted); text-decoration:none; transition:color .2s; }
+  .fl a:hover { color:var(--accent); }
+
+  @keyframes up { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:none} }
+  .blink { animation:blink 1s step-end infinite; color:var(--accent); }
+  @keyframes blink { 50%{opacity:0} }
+
+  @media(max-width:860px){
+    .w { padding:0 24px; }
+    .eg { grid-template-columns:1fr 1fr; }
+    .sg { grid-template-columns:1fr 1fr; }
+  }
+
+  /* mobile */
+  @media(max-width:560px){
+    .h-name { font-size: clamp(32px, 9vw, 52px); }
+    .eg { grid-template-columns:1fr; }
+    .ec { padding:18px; }
+    .pc { padding:18px; }
+    .pn { top:18px; right:18px; }
+    .ic { padding:18px; }
+    .ih { flex-direction:column; gap:2px; }
+    .sg { grid-template-columns:1fr 1fr; }
+    .sc { padding:14px; }
+    footer .fw { flex-direction:column; align-items:flex-start; }
+    .tt-lbl { display:none; }
+  }
+
+  @media(max-width:380px){
+    .w { padding:0 16px; }
+    .h-name { font-size: 9vw; }
+    .h-name { font-size: 9vw; }
+    .sg { grid-template-columns:1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="tt" id="tt">
+  <span class="tt-icon" id="ti">🌙</span>
+  <div class="tt-track"><div class="tt-thumb"></div></div>
+  <span class="tt-lbl" id="tl">Dark</span>
+</div>
+
+<section class="hero">
+  <div class="w">
+    <div class="h-tag">// portfolio — v1.0.0</div>
+    <h1 class="h-name">
+      Thiruvengadam
+      <span>TK<span class="blink">_</span></span>
+    </h1>
+    <p class="h-desc">B.Tech student in IoT &amp; Automation who builds things — from custom PCBs and embedded firmware to full-stack apps and wireless sensor networks.</p>
+    <div class="h-links">
+      <a href="mailto:tkthiruvengadam2605@gmail.com">tkthiruvengadam2605@gmail.com</a>
+      <a href="tel:+917397086633">+91 7397086633</a>
+      <a href="#">Perambalur, Tamil Nadu</a>
+    </div>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="lbl">01 — Education</div>
+    <div class="eg">
+      <div class="ec">
+        <div class="ec-s">SASTRA Deemed University</div>
+        <div class="ec-d">B.Tech CSE (IoT &amp; Automation)</div>
+        <div class="ec-m">Oct 2022 – Jun 2026 · Thanjavur</div>
+        <div class="ec-g">CGPA 7.7</div>
+      </div>
+      <div class="ec">
+        <div class="ec-s">Golden Gates Vidhyashram</div>
+        <div class="ec-d">CBSE · Perambalur</div>
+        <div class="ec-m">2019 – 2022</div>
+        <div class="ec-g">12th — 90.8%</div>
+        <div class="ec-g">10th — 78.6%</div>
+      </div>
+      <div class="ec">
+        <div class="ec-s">JEE Mains</div>
+        <div class="ec-d">National Engineering Entrance</div>
+        <div class="ec-m">2022</div>
+        <div class="ec-g">81st Percentile</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="lbl">02 — Projects</div>
+    <div class="pl">
+      <a class="pc" href="projects/hydroponics.html">
+        <div class="pn">01</div>
+        <div class="pt">Android · ESP32 · Firebase · Arduino C++</div>
+        <div class="ph">Hydroponics Control System</div>
+        <div class="pd">Feb – Apr 2025</div>
+        <ul class="pb">
+          <li>Built and deployed an automated hydroponics system with real-time environmental monitoring and threshold-based control.</li>
+          <li>Developed an Android app in Java to display live sensor readings and push control commands to ESP32 nodes via Firebase Realtime DB.</li>
+          <li>Wired and programmed environmental sensors with Arduino C++ firmware to actuate pumps and grow-lights automatically.</li>
+        </ul>
+      </a>
+      <a class="pc" href="projects/ir-blaster.html">
+        <div class="pn">02</div>
+        <div class="pt">KiCad · CH552G · Flutter · Embedded C</div>
+        <div class="ph">USB IR Blaster — Custom PCB Product</div>
+        <div class="pd">Jan – Mar 2025</div>
+        <ul class="pb">
+          <li>Designed, fabricated, and assembled a compact custom PCB from scratch — schematic in KiCad, physically manufactured and hand-soldered.</li>
+          <li>Programmed the CH552G (8051-based MCU) with embedded C to act as a USB HID device, transmitting IR hex codes to control any IR appliance.</li>
+          <li>Built a companion Flutter Android app to send hex codes over USB; backend on Neon (PostgreSQL).</li>
+        </ul>
+      </a>
+      <a class="pc" href="projects/ecommerce.html">
+        <div class="pn">03</div>
+        <div class="pt">React · Node.js · MongoDB · Firebase</div>
+        <div class="ph">E-Commerce Website</div>
+        <div class="pd">Oct 2024</div>
+        <ul class="pb">
+          <li>Built and shipped a full-stack e-commerce platform for a stationery shop — product listings, cart, and checkout end-to-end.</li>
+          <li>Node.js + Express REST API; MongoDB Atlas for storage; Firebase Auth for login; Tailwind CSS + Cloudinary frontend.</li>
+        </ul>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="lbl">03 — Internships</div>
+    <div class="ic">
+      <div class="ih">
+        <div class="it">MANET Waveform for SDRs</div>
+        <div class="id">ONGOING</div>
+      </div>
+      <div class="ico">Shankar Secure Network Solutions (TBI at SASTRA) — Consultancy with CoreEL Technologies</div>
+      <ul class="pb">
+        <li>Managing the overall pipeline of a MANET waveform project for Software Defined Radios (SDRs).</li>
+        <li>Designed an application layer UI to visualize SDR communications.</li>
+        <li>Validated connections and tested all layers via namespace and actual hardware.</li>
+      </ul>
+    </div>
+    <div class="ic">
+      <div class="ih">
+        <div class="it">IoT Engineer Intern</div>
+        <div class="id">APR 2024 – ONGOING</div>
+      </div>
+      <div class="ico">NWarehouse Pvt. Ltd.</div>
+      <ul class="pb">
+        <li>Engineered and delivered a production-ready LoRaWAN gateway (Raspberry Pi + LoRa SX130x) to NWarehouse as a live customer deployment.</li>
+        <li>Took full ownership from development to handover — firmware, gateway setup, server config, on-site testing, and final delivery.</li>
+        <li>Conducted pre-shipment QA testing of in-house IoT development boards before customer delivery.</li>
+      </ul>
+    </div>
+    <div class="ic">
+      <div class="ih">
+        <div class="it">IoT Embedded Systems Intern</div>
+        <div class="id">JUL – SEP 2024</div>
+      </div>
+      <div class="ico">Emertxe Information Technologies (Online)</div>
+      <ul class="pb">
+        <li>Hands-on training in embedded C, Linux device drivers, and IoT protocols — built projects using GPIO, UART, SPI, and I2C on real hardware.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="lbl">04 — Skills</div>
+    <div class="sg">
+      <div class="sc"><div class="sl">Languages</div><div class="sv">C · C++ · Java · Python · JavaScript · HTML/CSS · Dart</div></div>
+      <div class="sc"><div class="sl">Databases</div><div class="sv">MongoDB · SQL · Firebase Realtime DB</div></div>
+      <div class="sc"><div class="sl">Frameworks</div><div class="sv">React · Node.js · Express · Flask · Flutter · Tailwind · Bootstrap</div></div>
+      <div class="sc"><div class="sl">Tools</div><div class="sv">KiCad · Git · VS Code · Android Studio · Arduino IDE · Firebase Console</div></div>
+      <div class="sc"><div class="sl">Hardware</div><div class="sv">ESP32 · Raspberry Pi · CH552G (8051 MCU) · SX1262 LoRa · LoRaWAN</div></div>
+      <div class="sc"><div class="sl">Soft Skills</div><div class="sv">Problem Solving · Teamwork · Adaptability · Critical Thinking</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="sec">
+  <div class="w">
+    <div class="lbl">05 — Interests</div>
+    <div class="iw">
+      <div class="itag">IoT &amp; Embedded Systems</div>
+      <div class="itag">PCB Design</div>
+      <div class="itag">Firmware Design &amp; Analysis</div>
+      <div class="itag">Layer-wise Protocols</div>
+      <div class="itag">Full-Stack Web Development</div>
+      <div class="itag">Mobile App Development</div>
+      <div class="itag">Machine Learning</div>
+      <div class="itag">Wireless Sensor Networks</div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="w">
+    <div class="fw">
+      <div class="fn">Thiruvengadam TK</div>
+      <div class="fl">
+        <a href="mailto:tkthiruvengadam2605@gmail.com">Email</a>
+        <a href="tel:+917397086633">Phone</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<script>
+  const html = document.documentElement;
+  const init = localStorage.getItem('theme') || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light');
+  html.setAttribute('data-theme', init);
+  ui(init);
+
+  document.getElementById('tt').onclick = () => {
+    const n = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    html.setAttribute('data-theme', n);
+    localStorage.setItem('theme', n);
+    ui(n);
+  };
+  function ui(t) {
+    document.getElementById('ti').textContent = t==='dark' ? '🌙' : '☀️';
+    document.getElementById('tl').textContent = t==='dark' ? 'Dark' : 'Light';
+  }
+
+  const obs = new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) { e.target.classList.add('on'); obs.unobserve(e.target); }
+  }), { threshold: 0.06 });
+  document.querySelectorAll('.sec').forEach(s => obs.observe(s));
+</script>
+</body>
+</html>
